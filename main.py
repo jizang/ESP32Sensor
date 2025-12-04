@@ -24,18 +24,25 @@ buzzer.duty(0)
 # ------------------------------
 # TouchPad（觸控切換）
 # ------------------------------
-touch = TouchPad(Pin(13))
+touch_toggle = TouchPad(Pin(13))  # 切換警報開/關
+touch_pause = TouchPad(Pin(12))
 
-# TouchPad 閾值（開機後才校正）
-TOUCH_THRESHOLD = 300
+# 閾值
+TOUCH_THRESHOLD_TOGGLE = 300
+TOUCH_THRESHOLD_PAUSE = 300
 
 # 警報狀態（False = 預設關閉）
 alarm_enabled = False
 
-# 防抖動用
-last_touch_time = 0
+# 暫停功能（True = 15 秒內蜂鳴器不會響）
+alarm_pause = False
+pause_until = 0    # 恢復時間
 
-# 防止開機誤觸的時間（2 秒內不觸發）
+# 防抖
+last_touch_time_toggle = 0
+last_touch_time_pause = 0
+
+# 防止開機誤觸（前 2 秒忽略觸控）
 boot_time = time.ticks_ms()
 TOUCH_BLOCK_MS = 2000
 
@@ -51,11 +58,13 @@ def beep_once():
 
 
 def warning_beep():
+    if alarm_pause:
+        return
     for _ in range(3):
-        buzzer.duty(800)
-        time.sleep(0.15)
-        buzzer.duty(0)
-        time.sleep(0.1)
+    	buzzer.duty(800)
+    	time.sleep(0.15)
+    	buzzer.duty(0)
+    	time.sleep(0.1)
 
 
 # ------------------------------
@@ -68,24 +77,58 @@ def set_led(r, y, g):
 
 
 # ------------------------------
-# 讀取觸控
+# 觸控：切換警報開/關（Pin13）
 # ------------------------------
-def read_touch():
-    global alarm_enabled, last_touch_time
+def read_touch_toggle():
+    global alarm_enabled, last_touch_time_toggle
+
+    now = time.ticks_ms()
+
+    # 開機前 2 秒忽略觸控
+    if time.ticks_diff(now, boot_time) < TOUCH_BLOCK_MS:
+        return
+
+    t = touch_toggle.read()
+
+    # 防抖（800ms）
+    if t < TOUCH_THRESHOLD_TOGGLE and time.ticks_diff(now, last_touch_time_toggle) > 800:
+        alarm_enabled = not alarm_enabled
+        last_touch_time_toggle = now
+
+        print("警報開啟" if alarm_enabled else "警報關閉")
+        beep_once()
+
+
+# ------------------------------
+# 觸控：暫停警報 15 秒（Pin12）
+# ------------------------------
+def read_touch_pause():
+    global alarm_pause, pause_until, last_touch_time_pause
 
     now = time.ticks_ms()
 
     if time.ticks_diff(now, boot_time) < TOUCH_BLOCK_MS:
         return
 
-    t = touch.read()
+    t = touch_pause.read()
 
-    # 噪音防抖動 (800ms)
-    if t < TOUCH_THRESHOLD and time.ticks_diff(now, last_touch_time) > 800:
-        alarm_enabled = not alarm_enabled
-        last_touch_time = now
+    if t < TOUCH_THRESHOLD_PAUSE and time.ticks_diff(now, last_touch_time_pause) > 800:
+        alarm_pause = True
+        pause_until = now + 15000
+        last_touch_time_pause = now
+        print("警報暫停 15 秒")
+        beep_once()
 
-        print("警報開啟" if alarm_enabled else "警報關閉")
+
+# ------------------------------
+# 檢查是否恢復警報
+# ------------------------------
+def check_pause_recovery():
+    global alarm_pause
+
+    if alarm_pause and time.ticks_ms() > pause_until:
+        alarm_pause = False
+        print("警報恢復")
         beep_once()
 
 
@@ -93,7 +136,9 @@ def read_touch():
 # 主迴圈
 # ------------------------------
 while True:
-    read_touch()
+    read_touch_toggle()
+    read_touch_pause()
+    check_pause_recovery()
 
     try:
         sensor.measure()
@@ -110,11 +155,11 @@ while True:
         if temp > 30:
             warning = True
             red.value(1)
-            if alarm_enabled:
+            if alarm_enabled and not alarm_pause:
                 warning_beep()
 
         # ------ 濕度異常 ------
-        elif humi > 90:
+        elif humi > 80:
             warning = True
             yellow.value(1)
 
